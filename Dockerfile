@@ -1,6 +1,7 @@
+
 FROM node:20-slim
 
-# Install system dependencies (ffmpeg for media, git, curl)
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     git \
@@ -8,8 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Hugging Face Spaces runs non-root container with user id 1000
-RUN useradd -m -u 1000 user
 WORKDIR /app
 
 # Install dependencies
@@ -23,11 +22,14 @@ COPY . .
 RUN npm run build
 
 ENV NODE_ENV=production
+
 EXPOSE 3000 7860 8080
 
-# Give permissions to user
-RUN chown -R user:user /app
-USER user
+# Give permissions to existing node user
+RUN chown -R node:node /app
+
+# Use existing non-root user
+USER node
 
 # Run application server
 CMD ["npm", "start"]
