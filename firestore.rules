@@ -1,0 +1,136 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$');
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Strict verified-email Master Admin check (prevents unverified email spoofing)
+    function isAdmin() {
+      return isVerifiedUser() &&
+        request.auth.token.email != null &&
+        (request.auth.token.email.lower() == 'sawrikasuraj9@gmail.com' ||
+         request.auth.token.email.lower() == 'sawrikasuraj759@gmail.com' ||
+         request.auth.token.email.lower() == 'epavenav@gmail.com');
+    }
+
+    function isValidUserCreate(data) {
+      return data.keys().hasAll(['username', 'email', 'plan', 'coins']) &&
+        data.keys().hasOnly([
+          'username', 'email', 'plan', 'coins', 'createdAt',
+          'botSlotsUsed', 'botSlotsTotal', 'ownedPlans',
+          'avatarLetter', 'emailNotifications', 'productUpdates', 'lastDailyClaim'
+        ]) &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 64 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 128 &&
+        data.plan == 'mini' &&
+        data.coins is number && data.coins >= 0 && data.coins <= 5 &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64)) &&
+        (!('botSlotsUsed' in data) || (data.botSlotsUsed is number && data.botSlotsUsed >= 0 && data.botSlotsUsed <= 1)) &&
+        (!('botSlotsTotal' in data) || (data.botSlotsTotal is number && data.botSlotsTotal >= 1 && data.botSlotsTotal <= 1));
+    }
+
+    function isValidUserSelfUpdate(incoming, existing) {
+      let changed = incoming.diff(existing).affectedKeys();
+      return changed.hasOnly([
+          'username', 'avatarLetter', 'emailNotifications', 'productUpdates', 'lastDailyClaim'
+        ]) &&
+        (!('username' in incoming) || (incoming.username is string && incoming.username.size() >= 1 && incoming.username.size() <= 64)) &&
+        (!('avatarLetter' in incoming) || (incoming.avatarLetter is string && incoming.avatarLetter.size() <= 4)) &&
+        (!('emailNotifications' in incoming) || incoming.emailNotifications is bool) &&
+        (!('productUpdates' in incoming) || incoming.productUpdates is bool) &&
+        (!('lastDailyClaim' in incoming) || incoming.lastDailyClaim is number) &&
+        incoming.coins == existing.coins &&
+        incoming.plan == existing.plan &&
+        incoming.email == existing.email;
+    }
+
+    function isValidBot(data) {
+      return data.keys().hasAll(['name', 'status']) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 64 &&
+        data.status in ['running', 'stopped', 'rebuilding', 'deploying'] &&
+        (!('templateName' in data) || (data.templateName is string && data.templateName.size() <= 64)) &&
+        (!('phoneNumber' in data) || (data.phoneNumber is string && data.phoneNumber.size() <= 32)) &&
+        (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() <= 64));
+    }
+
+    function isValidPurchaseRequestCreate(data) {
+      return data.keys().hasAll(['customerId', 'customerEmail', 'itemType', 'priceLkr']) &&
+        data.customerId is string && data.customerId == request.auth.uid && data.customerId.size() <= 128 &&
+        data.customerEmail is string && data.customerEmail.size() <= 128 &&
+        data.itemType in ['plan', 'coin_pack'] &&
+        data.priceLkr is number && data.priceLkr >= 0 &&
+        (!('status' in data) || data.status == 'PENDING') &&
+        (!('itemName' in data) || (data.itemName is string && data.itemName.size() <= 128)) &&
+        (!('customerName' in data) || (data.customerName is string && data.customerName.size() <= 64)) &&
+        (!('referenceId' in data) || (data.referenceId is string && data.referenceId.size() <= 64));
+    }
+
+    // Individual User Profile and Data (PII isolated by Firebase UID; coins & plan locked to Master Admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && (
+        isAdmin() ||
+        (isOwner(userId) && isValidUserCreate(request.resource.data))
+      );
+      allow update: if isValidId(userId) && (
+        isAdmin() ||
+        (isOwner(userId) && isValidUserSelfUpdate(request.resource.data, resource.data))
+      );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      // Customer individual bot deployments
+      match /bots/{botId} {
+        allow get: if isValidId(userId) && isValidId(botId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow create, update: if isValidId(userId) && isValidId(botId) && (isOwner(userId) || isAdmin()) && isValidBot(request.resource.data);
+        allow delete: if isValidId(userId) && isValidId(botId) && (isOwner(userId) || isAdmin());
+      }
+
+      // Customer individual transactions (read-only for owner; mutations by Master Admin)
+      match /transactions/{txId} {
+        allow get: if isValidId(userId) && isValidId(txId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow write: if isValidId(userId) && isValidId(txId) && isAdmin();
+      }
+    }
+
+    // Customer Purchase Requests (strictly private to customer who created it or Master Admin)
+    match /purchase_requests/{reqId} {
+      allow get: if isValidId(reqId) && (
+        isAdmin() ||
+        (isSignedIn() && (resource.data.customerId == request.auth.uid || resource.data.userId == request.auth.uid))
+      );
+      allow list: if isAdmin() ||
+        (isSignedIn() && (resource.data.customerId == request.auth.uid || resource.data.userId == request.auth.uid));
+      allow create: if isValidId(reqId) && (
+        isAdmin() ||
+        (isSignedIn() && isValidPurchaseRequestCreate(request.resource.data))
+      );
+      allow update, delete: if isValidId(reqId) && isAdmin();
+    }
+
+    // Admin audit logs and system settings
+    match /admin_audit_logs/{logId} {
+      allow get, list, write: if isAdmin();
+    }
+  }
+}
