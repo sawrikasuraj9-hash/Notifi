@@ -8,8 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Hugging Face Spaces runs non-root container with user id 1000
-RUN useradd -m -u 1000 user
+# node:20-slim already provides a non-root "node" user with UID 1000 (matches Hugging Face Spaces)
 WORKDIR /app
 
 # Install dependencies
@@ -26,8 +25,8 @@ ENV NODE_ENV=production
 EXPOSE 3000 7860 8080
 
 # Give permissions to user
-RUN chown -R user:user /app
-USER user
+RUN chown -R node:node /app
+USER node
 
 # Run application server
 CMD ["npm", "start"]
